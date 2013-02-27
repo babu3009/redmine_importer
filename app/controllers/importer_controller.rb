@@ -83,8 +83,9 @@ class ImporterController < ApplicationController
     end
     IssueRelation::TYPES.each_pair do |rtype, rinfo|
       @attrs.push([l_or_humanize(rinfo[:name]),rtype])
-    end
-    @attrs.sort!
+    end 
+    #There could be symbols in the array, so we have to convert every item into String to sort it
+    @attrs.sort!{|x,y| x.to_s <=> y.to_s}
   end
   
   # Returns the issue object associated with the given value of the given attribute.
