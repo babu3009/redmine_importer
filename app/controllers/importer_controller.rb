@@ -1,4 +1,4 @@
-require 'fastercsv'
+require 'csv'
 require 'tempfile'
 
 class MultipleIssuesForUniqueValue < Exception
@@ -10,16 +10,6 @@ end
 class Journal < ActiveRecord::Base
   def empty?(*args)
     (details.empty? && notes.blank?)
-  end
-end
-
-class ActionController::Flash::FlashHash < Hash
-  def append(key,msg)
-    if !self.has_key?(key)
-      self[key] = msg
-    else
-      self[key] += "<br />"+msg
-    end
   end
 end
 
@@ -83,8 +73,7 @@ class ImporterController < ApplicationController
     end
     IssueRelation::TYPES.each_pair do |rtype, rinfo|
       @attrs.push([l_or_humanize(rinfo[:name]),rtype])
-    end 
-    #There could be symbols in the array, so we have to convert every item into String to sort it
+    end
     @attrs.sort!{|x,y| x.to_s <=> y.to_s}
   end
   
@@ -94,10 +83,20 @@ class ImporterController < ApplicationController
     if @issue_by_unique_attr.has_key?(attr_value)
       return @issue_by_unique_attr[attr_value]
     end
+
     if unique_attr == "id"
       issues = [Issue.find_by_id(attr_value)]
-      else
-      query = Query.new(:name => "_importer", :project => @project)
+    else
+      # Use IssueQuery class Redmine >= 2.3.0
+      begin
+        if Module.const_get('IssueQuery') && IssueQuery.is_a?(Class)
+          query_class = IssueQuery
+        end
+      rescue NameError
+        query_class = Query
+      end
+
+      query = query_class.new(:name => "_importer", :project => @project)
       query.add_filter("status_id", "*", [1])
       query.add_filter(unique_attr, "=", [attr_value])
       
@@ -107,7 +106,7 @@ class ImporterController < ApplicationController
     if issues.size > 1
       @failed_count += 1
       @failed_issues[@failed_count] = row_data
-      flash.append(:warning,"Unique field #{unique_attr} with value '#{attr_value}' in issue #{@failed_count} has duplicate record")
+      flash_message(:warning, "Unique field #{unique_attr} with value '#{attr_value}' in issue #{@failed_count} has duplicate record")
       raise MultipleIssuesForUniqueValue, "Unique field #{unique_attr} with value '#{attr_value}' has duplicate record"
       else
       if issues.size == 0
@@ -193,7 +192,8 @@ class ImporterController < ApplicationController
     journal_field = params[:journal_field]
     update_other_project = params[:update_other_project]
     ignore_non_exist = params[:ignore_non_exist]
-    fields_map = params[:fields_map]
+    fields_map = {}
+    params[:fields_map].each { |k, v| fields_map[k.unpack('U*').pack('U*')] = v }
     send_emails = params[:send_emails]
     add_categories = params[:add_categories]
     add_versions = params[:add_versions]
@@ -231,6 +231,13 @@ class ImporterController < ApplicationController
       end
 
       begin
+        row.each do |k, v|
+          k = k.unpack('U*').pack('U*') if k.kind_of?(String)
+          v = v.unpack('U*').pack('U*') if v.kind_of?(String)
+
+          row[k] = v
+        end
+
         tracker = Tracker.find_by_name(row[attrs_map["tracker"]])
         status = IssueStatus.find_by_name(row[attrs_map["status"]])
         author = attrs_map["author"] ? user_for_login!(row[attrs_map["author"]]) : User.current
@@ -242,7 +249,7 @@ class ImporterController < ApplicationController
           category.save
         end
         assigned_to = row[attrs_map["assigned_to"]] != nil ? user_for_login!(row[attrs_map["assigned_to"]]) : nil
-        fixed_version_name = row[attrs_map["fixed_version"]]
+        fixed_version_name = row[attrs_map["fixed_version"]].blank? ? nil : row[attrs_map["fixed_version"]]
         fixed_version_id = fixed_version_name ? version_id_for_name!(project,fixed_version_name,add_versions) : nil
         watchers = row[attrs_map["watchers"]]
         # new issue or find exists one
@@ -254,7 +261,7 @@ class ImporterController < ApplicationController
       rescue ActiveRecord::RecordNotFound
         @failed_count += 1
         @failed_issues[@failed_count] = row
-        flash.append(:warning,"When adding issue #{@failed_count} below, the #{@unfound_class} #{@unfound_key} was not found")
+        flash_message(:warning, "When adding issue #{@failed_count} below, the #{@unfound_class} #{@unfound_key} was not found")
         next
       end
 
@@ -303,14 +310,14 @@ class ImporterController < ApplicationController
           else
             @failed_count += 1
             @failed_issues[@failed_count] = row
-            flash.append(:warning,"Could not update issue #{@failed_count} below, no match for the value #{row[unique_field]} were found")
+            flash_message(:warning, "Could not update issue #{@failed_count} below, no match for the value #{row[unique_field]} were found")
             next
           end
           
         rescue MultipleIssuesForUniqueValue
           @failed_count += 1
           @failed_issues[@failed_count] = row
-          flash.append(:warning,"Could not update issue #{@failed_count} below, multiple matches for the value #{row[unique_field]} were found")
+          flash_message(:warning, "Could not update issue #{@failed_count} below, multiple matches for the value #{row[unique_field]} were found")
           next
         end
       end
@@ -330,8 +337,8 @@ class ImporterController < ApplicationController
       # optional attributes
       issue.description = row[attrs_map["description"]] || issue.description
       issue.category_id = category != nil ? category.id : issue.category_id
-      issue.start_date = row[attrs_map["start_date"]] || issue.start_date
-      issue.due_date = row[attrs_map["due_date"]] || issue.due_date
+      issue.start_date = row[attrs_map["start_date"]].blank? ? nil : Date.parse(row[attrs_map["start_date"]])
+      issue.due_date = row[attrs_map["due_date"]].blank? ? nil : Date.parse(row[attrs_map["due_date"]])
       issue.assigned_to_id = assigned_to != nil ? assigned_to.id : issue.assigned_to_id
       issue.fixed_version_id = fixed_version_id != nil ? fixed_version_id : issue.fixed_version_id
       issue.done_ratio = row[attrs_map["done_ratio"]] || issue.done_ratio
@@ -349,20 +356,20 @@ class ImporterController < ApplicationController
         else
           @failed_count += 1
           @failed_issues[@failed_count] = row
-          flash.append(:warning,"When setting the parent for issue #{@failed_count} below, no matches for the value #{parent_value} were found")
+          flash_message(:warning, "When setting the parent for issue #{@failed_count} below, no matches for the value #{parent_value} were found")
           next
         end
       rescue MultipleIssuesForUniqueValue
         @failed_count += 1
         @failed_issues[@failed_count] = row
-        flash.append(:warning,"When setting the parent for issue #{@failed_count} below, multiple matches for the value #{parent_value} were found")
+        flash_message(:warning, "When setting the parent for issue #{@failed_count} below, multiple matches for the value #{parent_value} were found")
         next
       end
 
       # custom fields
       custom_failed_count = 0
       issue.custom_field_values = issue.available_custom_fields.inject({}) do |h, cf|
-        if value = row[attrs_map[cf.name]]
+        if value = row[attrs_map[cf.name]].blank? ? nil : row[attrs_map[cf.name]]
           begin
             if cf.field_format == 'user'
               value = user_id_for_login!(value).to_s
@@ -378,7 +385,7 @@ class ImporterController < ApplicationController
               @failed_count += 1
               @failed_issues[@failed_count] = row
             end
-            flash.append(:warning,"When trying to set custom field #{cf.name} on issue #{@failed_count} below, value #{value} was invalid")
+            flash_message(:warning, "When trying to set custom field #{cf.name} on issue #{@failed_count} below, value #{value} was invalid")
           end
         end
         h
@@ -404,19 +411,18 @@ class ImporterController < ApplicationController
               @failed_issues[@failed_count] = row
             end
             watcher_failed_count += 1
-            flash.append(:warning,"When trying to add watchers on issue #{@failed_count} below, User #{watcher} was not found")
+            flash_message(:warning, "When trying to add watchers on issue #{@failed_count} below, User #{watcher} was not found")
           end
         end
       end
       next if watcher_failed_count > 0
 
-      if (!issue.save)
-        # 记录错误
+      unless issue.save
         @failed_count += 1
         @failed_issues[@failed_count] = row
-        flash.append(:warning,"The following data-validation errors occurred on issue #{@failed_count} in the list below")
+        flash_message(:warning, "The following data-validation errors occurred on issue #{@failed_count} in the list below")
         issue.errors.each do |attr, error_message|
-          flash.append(:warning,"&nbsp;&nbsp;"+error_message)
+          flash_message(:warning, "&nbsp;&nbsp;#{error_message}")
         end
       else
         if unique_field
@@ -483,6 +489,11 @@ private
 
   def find_project
     @project = Project.find(params[:project_id])
+  end
+
+  def flash_message(type, text)
+    flash[type] ||= ""
+    flash[type] += "#{text}<br/>"
   end
   
 end
