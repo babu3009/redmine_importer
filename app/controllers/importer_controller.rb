@@ -48,7 +48,7 @@ class ImporterController < ApplicationController
     i = 0
     @samples = []
     
-    FasterCSV.new(iip.csv_data, {:headers=>true,
+    CSV.new(iip.csv_data, {:headers=>true,
     :encoding=>iip.encoding, :quote_char=>iip.quote_char, :col_sep=>iip.col_sep}).each do |row|
       @samples[i] = row
      
@@ -114,6 +114,20 @@ class ImporterController < ApplicationController
       end
       issues.first
     end
+  end
+
+  # Allow to get login parameter for user_for_login function from user's fullname
+  def user_for_fullname!(fullname)
+    login = ""
+
+    if (fullname!="")
+      user = User.find(:first, :conditions => ['concat(firstname," ",lastname) = ?', fullname])
+      if user.present?
+        login = user[:login]
+      end
+    end
+
+    user_for_login(login)
   end
 
   # Returns the id for the given user or raises RecordNotFound
@@ -207,8 +221,8 @@ class ImporterController < ApplicationController
     unique_error = nil
     if update_issue
       unique_error = l(:text_rmi_specify_unique_field_for_update)
-    elsif attrs_map["parent_issue"] != nil
-      unique_error = l(:text_rmi_specify_unique_field_for_column,:column => l(:field_parent_issue))
+#    elsif attrs_map["parent_issue"] != nil
+#      unique_error = l(:text_rmi_specify_unique_field_for_column,:column => l(:field_parent_issue))
     else
       IssueRelation::TYPES.each_key do |rtype|
         if attrs_map[rtype]
@@ -222,9 +236,8 @@ class ImporterController < ApplicationController
       return
     end
 
-    FasterCSV.new(iip.csv_data, {:headers=>true, :encoding=>iip.encoding, 
+    CSV.new(iip.csv_data, {:headers=>true, :encoding=>iip.encoding, 
         :quote_char=>iip.quote_char, :col_sep=>iip.col_sep}).each do |row|
-
       project = Project.find_by_name(row[attrs_map["project"]])
       if !project
         project = @project
@@ -240,7 +253,7 @@ class ImporterController < ApplicationController
 
         tracker = Tracker.find_by_name(row[attrs_map["tracker"]])
         status = IssueStatus.find_by_name(row[attrs_map["status"]])
-        author = attrs_map["author"] ? user_for_login!(row[attrs_map["author"]]) : User.current
+        author = attrs_map["author"].present? ? user_for_fullname!(row[attrs_map["author"]]) : User.current
         priority = Enumeration.find_by_name(row[attrs_map["priority"]])
         category_name = row[attrs_map["category"]]
         category = IssueCategory.find_by_project_id_and_name(project.id, category_name)
@@ -248,7 +261,7 @@ class ImporterController < ApplicationController
           category = project.issue_categories.build(:name => category_name)
           category.save
         end
-        assigned_to = row[attrs_map["assigned_to"]] != nil ? user_for_login!(row[attrs_map["assigned_to"]]) : nil
+        assigned_to = row[attrs_map["assigned_to"]] != nil ? user_for_fullname!(row[attrs_map["assigned_to"]]) : nil
         fixed_version_name = row[attrs_map["fixed_version"]].blank? ? nil : row[attrs_map["fixed_version"]]
         fixed_version_id = fixed_version_name ? version_id_for_name!(project,fixed_version_name,add_versions) : nil
         watchers = row[attrs_map["watchers"]]
